@@ -25,6 +25,7 @@ const MIN_WEAPON_FIRE_COOLDOWNS = {
   shotgun: 500   // client fire rate is 640ms; 500ms baseline cooldown
 };
 const DEFAULT_MIN_FIRE_COOLDOWN_MS = 80;
+const MAX_COMBAT_RANGE = 120; // Maximum valid range between shooter and target (units)
 const spawnPoints = [
   { x: 0, y: 8, z: 0 },
   { x: 18, y: 8, z: 16 },
@@ -116,6 +117,21 @@ io.on('connection', (socket) => {
       // If a player was hit
       if (hitData.targetId && players[hitData.targetId] && !players[hitData.targetId].isDead) {
         const target = players[hitData.targetId];
+
+        // Reject self-damage packets
+        if (target.id === socket.id) return;
+
+        // Validate distance between shooter and target to prevent out-of-bounds damage
+        if (!shooter.position || !target.position) return;
+        const dx = shooter.position.x - target.position.x;
+        const dy = shooter.position.y - target.position.y;
+        const dz = shooter.position.z - target.position.z;
+        const distToTarget = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (distToTarget > MAX_COMBAT_RANGE) {
+          return;
+        }
+
         const baseDamage = Math.max(1, Math.min(Number(hitData.damage) || 25, 120));
         const damage = hitData.headshot ? Math.round(baseDamage * 1.8) : baseDamage;
         target.health -= damage;
