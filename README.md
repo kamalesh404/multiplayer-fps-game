@@ -54,6 +54,30 @@ To guarantee a steady **60 FPS** and cross-device compatibility:
 
 ---
 
+## 🛡️ Server Security & Anti-Cheat Validation
+
+To ensure fair gameplay and protect the multiplayer arena from exploits, the authoritative server enforces strict real-time validations:
+
+1. **Fire Rate Cooldown Validation (`playerShoot`):**
+   - Tracks `lastShotTime` per connected player.
+   - Enforces weapon-specific minimum cooldown thresholds (baseline 80ms, 50ms for high-fire-rate SMG with network jitter allowance) to reject rapid-fire and packet spam injection before broadcasting shot effects or computing damage.
+
+2. **Combat Range Validation:**
+   - Computes the 3D distance between the shooter and the target upon registered hits.
+   - Rejects combat packets if distance exceeds the maximum allowed engagement range (120 units), preventing out-of-bounds and cross-map damage hacks.
+   - Enforces self-hit rejection and invalid position guards.
+
+3. **Movement Delta & Teleportation Prevention (`playerMovement`):**
+   - Validates coordinates for numeric sanity and finiteness.
+   - Enforces a maximum movement delta per tick (`MAX_MOVEMENT_DELTA_PER_TICK = 15 units`) to detect and reject teleportation hacks and speedhacks.
+   - Whitelists legitimate spawn points for respawn and death plane resets.
+
+4. **Player Profile Sanitization (`playerProfile`):**
+   - Sanitizes player names by stripping unsafe characters (preventing HTML/XSS injection into the scoreboard/lobby) and capping length to 16 characters.
+   - Validates weapon loadout choices against an allowed whitelist (`assault`, `smg`, `shotgun`).
+
+---
+
 ## 🛣️ Development Roadmap
 
 ### Phase 1: Engine Foundation & Multiplayer Setup *(CURRENT)*
