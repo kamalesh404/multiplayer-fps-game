@@ -19,6 +19,12 @@ const io = new Server(server, {
 
 const players = {};
 const MAX_HP = 100;
+const MIN_WEAPON_FIRE_COOLDOWNS = {
+  smg: 50,       // client fire rate is 62ms; allows small network jitter
+  assault: 80,   // client fire rate is 92ms; 80ms baseline cooldown
+  shotgun: 500   // client fire rate is 640ms; 500ms baseline cooldown
+};
+const DEFAULT_MIN_FIRE_COOLDOWN_MS = 80;
 const spawnPoints = [
   { x: 0, y: 8, z: 0 },
   { x: 18, y: 8, z: 16 },
@@ -57,7 +63,9 @@ io.on('connection', (socket) => {
     kills: 0,
     deaths: 0,
     state: 'idle',
-    isDead: false
+    isDead: false,
+    loadout: 'assault',
+    lastShotTime: 0
   };
 
   // Sync current state
@@ -83,14 +91,27 @@ io.on('connection', (socket) => {
   });
 
   // Combat: Handle Shooting
-  socket.on('playerShoot', (hitData) => {
-    if (players[socket.id] && !players[socket.id].isDead) {
-      // Broadcast muzzle flash/sound effect to others
-      socket.broadcast.emit('playerFired', {
-        id: socket.id,
-        origin: hitData.origin,
-        end: hitData.end
-      });
+  socket.on('playerShoot', (hitData = {}) => {
+    const shooter = players[socket.id];
+    if (!shooter || shooter.isDead) return;
+
+    // Enforce fire rate cooldown to reject spam/rapid-fire packet injection
+    const now = Date.now();
+    const minCooldown = (shooter.loadout && MIN_WEAPON_FIRE_COOLDOWNS[shooter.loadout])
+      ? MIN_WEAPON_FIRE_COOLDOWNS[shooter.loadout]
+      : DEFAULT_MIN_FIRE_COOLDOWN_MS;
+
+    if (shooter.lastShotTime && (now - shooter.lastShotTime) < minCooldown) {
+      return;
+    }
+    shooter.lastShotTime = now;
+
+    // Broadcast muzzle flash/sound effect to others
+    socket.broadcast.emit('playerFired', {
+      id: socket.id,
+      origin: hitData.origin,
+      end: hitData.end
+    });
 
       // If a player was hit
       if (hitData.targetId && players[hitData.targetId] && !players[hitData.targetId].isDead) {
@@ -122,6 +143,7 @@ io.on('connection', (socket) => {
               players[target.id].health = MAX_HP;
               players[target.id].isDead = false;
               players[target.id].position = pickSpawn();
+              players[target.id].lastShotTime = 0;
               io.emit('playerRespawned', players[target.id]);
               emitLobbyStats();
             }
@@ -138,7 +160,6 @@ io.on('connection', (socket) => {
           emitLobbyStats();
         }
       }
-    }
   });
 
   // AI Bot for Training (Local to player)
