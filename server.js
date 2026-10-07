@@ -26,6 +26,8 @@ const MIN_WEAPON_FIRE_COOLDOWNS = {
 };
 const DEFAULT_MIN_FIRE_COOLDOWN_MS = 80;
 const MAX_COMBAT_RANGE = 120; // Maximum valid range between shooter and target (units)
+const MAX_MOVEMENT_DELTA_PER_TICK = 15; // Max distance per tick to prevent teleportation/speedhacks (units)
+const ALLOWED_LOADOUTS = ['assault', 'smg', 'shotgun'];
 const spawnPoints = [
   { x: 0, y: 8, z: 0 },
   { x: 18, y: 8, z: 16 },
@@ -75,20 +77,83 @@ io.on('connection', (socket) => {
   emitLobbyStats();
 
   socket.on('playerProfile', (profile = {}) => {
-    if (!players[socket.id]) return;
-    players[socket.id].name = String(profile.name || players[socket.id].name).slice(0, 16);
-    players[socket.id].loadout = profile.loadout || players[socket.id].loadout;
+    const player = players[socket.id];
+    if (!player) return;
+
+    if (profile.name !== undefined) {
+      const sanitizedName = String(profile.name)
+        .replace(/[^a-zA-Z0-9_\- ]/g, '')
+        .trim()
+        .slice(0, 16);
+      player.name = sanitizedName || `Soldier_${socket.id.slice(0, 4)}`;
+    }
+
+    if (profile.loadout !== undefined && ALLOWED_LOADOUTS.includes(profile.loadout)) {
+      player.loadout = profile.loadout;
+    }
+
     emitLobbyStats();
   });
 
-  // Movement
-  socket.on('playerMovement', (movementData) => {
-    if (players[socket.id] && !players[socket.id].isDead) {
-      players[socket.id].position = movementData.position;
-      players[socket.id].rotation = movementData.rotation;
-      players[socket.id].state = movementData.state;
-      socket.broadcast.emit('playerMoved', players[socket.id]);
+  // Movement: Handle Player Movement with Speed / Delta Validation
+  socket.on('playerMovement', (movementData = {}) => {
+    const player = players[socket.id];
+    if (!player || player.isDead) return;
+
+    // Validate position data structure and numeric sanity
+    if (!movementData.position ||
+        typeof movementData.position.x !== 'number' ||
+        typeof movementData.position.y !== 'number' ||
+        typeof movementData.position.z !== 'number' ||
+        !Number.isFinite(movementData.position.x) ||
+        !Number.isFinite(movementData.position.y) ||
+        !Number.isFinite(movementData.position.z)) {
+      return;
     }
+
+    // Validate movement delta between ticks to detect teleportation and speedhacks
+    if (player.position) {
+      const dx = movementData.position.x - player.position.x;
+      const dy = movementData.position.y - player.position.y;
+      const dz = movementData.position.z - player.position.z;
+      const movementDelta = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+      if (movementDelta > MAX_MOVEMENT_DELTA_PER_TICK) {
+        // Allow legitimate respawn / fall resets near predefined spawn points
+        const isNearSpawn = spawnPoints.some((sp) => {
+          const sdx = movementData.position.x - sp.x;
+          const sdy = movementData.position.y - sp.y;
+          const sdz = movementData.position.z - sp.z;
+          return Math.sqrt(sdx * sdx + sdy * sdy + sdz * sdz) < 3.0;
+        });
+
+        if (!isNearSpawn) {
+          // Reject suspicious teleportation or speedhack packet
+          return;
+        }
+      }
+    }
+
+    player.position = {
+      x: movementData.position.x,
+      y: movementData.position.y,
+      z: movementData.position.z
+    };
+
+    if (movementData.rotation && typeof movementData.rotation === 'object') {
+      player.rotation = {
+        x: Number(movementData.rotation.x) || 0,
+        y: Number(movementData.rotation.y) || 0,
+        z: Number(movementData.rotation.z) || 0
+      };
+    }
+
+    if (typeof movementData.state === 'string') {
+      const validStates = ['idle', 'running', 'sprinting'];
+      player.state = validStates.includes(movementData.state) ? movementData.state : 'idle';
+    }
+
+    socket.broadcast.emit('playerMoved', player);
   });
 
   // Combat: Handle Shooting
