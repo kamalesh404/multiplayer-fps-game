@@ -18,16 +18,40 @@ const io = new Server(server, {
 });
 
 const players = {};
+const lastMoveAt = {}; // socket id -> ms timestamp of last accepted movement; cleared on respawn
 const MAX_HP = 100;
-const MIN_WEAPON_FIRE_COOLDOWNS = {
-  smg: 50,       // client fire rate is 62ms; allows small network jitter
-  assault: 80,   // client fire rate is 92ms; 80ms baseline cooldown
-  shotgun: 500   // client fire rate is 640ms; 500ms baseline cooldown
+
+// Server-authoritative weapon stats (mirror of main.js); client-reported damage is ignored.
+const WEAPONS = {
+  assault: { damage: 24, fireRate: 92, range: 120 },
+  smg: { damage: 18, fireRate: 62, range: 80 },
+  shotgun: { damage: 14, fireRate: 640, range: 50 }
 };
-const DEFAULT_MIN_FIRE_COOLDOWN_MS = 80;
-const MAX_COMBAT_RANGE = 120; // Maximum valid range between shooter and target (units)
-const MAX_MOVEMENT_DELTA_PER_TICK = 15; // Max distance per tick to prevent teleportation/speedhacks (units)
-const ALLOWED_LOADOUTS = ['assault', 'smg', 'shotgun'];
+const DEFAULT_LOADOUT = 'assault';
+const HEADSHOT_MULTIPLIER = 1.8;
+const FIRE_RATE_TOLERANCE = 0.8;   // allow jitter: min interval = fireRate * 0.8
+const RANGE_TOLERANCE = 1.25;      // latency slack on hit distance
+const MAX_MOVE_SPEED = 30;         // units/s; sprint ~8, slide boost ~2x, plus slack
+const MAX_VERTICAL_SPEED = 60;     // units/s; jumps and falls
+const MAX_ORIGIN_OFFSET = 10;      // shot origin must be near server-known position
+const WORLD_LIMIT = 100;
+const MIN_Y = -50;
+const MAX_Y = 100;
+const PLAYER_STATES = new Set(['idle', 'running', 'sprinting']);
+
+function isVec3(v) {
+  return !!v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+}
+
+function isInWorld(v) {
+  return isVec3(v) && Math.abs(v.x) <= WORLD_LIMIT && Math.abs(v.z) <= WORLD_LIMIT &&
+    v.y >= MIN_Y && v.y <= MAX_Y;
+}
+
+function distance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
 const spawnPoints = [
   { x: 0, y: 8, z: 0 },
   { x: 18, y: 8, z: 16 },
@@ -67,9 +91,9 @@ io.on('connection', (socket) => {
     deaths: 0,
     state: 'idle',
     isDead: false,
-    loadout: 'assault',
-    lastShotTime: 0
+    loadout: DEFAULT_LOADOUT
   };
+  let lastShotAt = 0;
 
   // Sync current state
   socket.emit('currentPlayers', players);
@@ -88,89 +112,57 @@ io.on('connection', (socket) => {
       player.name = sanitizedName || `Soldier_${socket.id.slice(0, 4)}`;
     }
 
-    if (profile.loadout !== undefined && ALLOWED_LOADOUTS.includes(profile.loadout)) {
+    if (typeof profile.loadout === 'string' && Object.hasOwn(WEAPONS, profile.loadout)) {
       player.loadout = profile.loadout;
     }
 
     emitLobbyStats();
   });
 
-  // Movement: Handle Player Movement with Speed / Delta Validation
-  socket.on('playerMovement', (movementData = {}) => {
+  // Movement: Handle Player Movement with Speed & Range Validation
+  socket.on('playerMovement', (movementData) => {
     const player = players[socket.id];
-    if (!player || player.isDead) return;
+    if (!player || player.isDead || !movementData) return;
+    const { position, rotation, state } = movementData;
+    if (!isInWorld(position) || !rotation || !Number.isFinite(rotation.y)) return;
 
-    // Validate position data structure and numeric sanity
-    if (!movementData.position ||
-        typeof movementData.position.x !== 'number' ||
-        typeof movementData.position.y !== 'number' ||
-        typeof movementData.position.z !== 'number' ||
-        !Number.isFinite(movementData.position.x) ||
-        !Number.isFinite(movementData.position.y) ||
-        !Number.isFinite(movementData.position.z)) {
-      return;
-    }
-
-    // Validate movement delta between ticks to detect teleportation and speedhacks
-    if (player.position) {
-      const dx = movementData.position.x - player.position.x;
-      const dy = movementData.position.y - player.position.y;
-      const dz = movementData.position.z - player.position.z;
-      const movementDelta = Math.sqrt(dx * dx + dy * dy + dz * dz);
-
-      if (movementDelta > MAX_MOVEMENT_DELTA_PER_TICK) {
+    const now = Date.now();
+    if (lastMoveAt[socket.id]) {
+      // Reject teleports / speed hacks and resync the client to its last accepted position
+      const dt = Math.min(Math.max((now - lastMoveAt[socket.id]) / 1000, 0.016), 1);
+      const horizontal = Math.hypot(position.x - player.position.x, position.z - player.position.z);
+      const vertical = Math.abs(position.y - player.position.y);
+      if (horizontal / dt > MAX_MOVE_SPEED || vertical / dt > MAX_VERTICAL_SPEED) {
         // Allow legitimate respawn / fall resets near predefined spawn points
         const isNearSpawn = spawnPoints.some((sp) => {
-          const sdx = movementData.position.x - sp.x;
-          const sdy = movementData.position.y - sp.y;
-          const sdz = movementData.position.z - sp.z;
-          return Math.sqrt(sdx * sdx + sdy * sdy + sdz * sdz) < 3.0;
+          return Math.hypot(position.x - sp.x, position.y - sp.y, position.z - sp.z) < 3.0;
         });
 
         if (!isNearSpawn) {
-          // Reject suspicious teleportation or speedhack packet
+          socket.emit('playerMoved', player);
           return;
         }
       }
     }
+    lastMoveAt[socket.id] = now;
 
-    player.position = {
-      x: movementData.position.x,
-      y: movementData.position.y,
-      z: movementData.position.z
-    };
-
-    if (movementData.rotation && typeof movementData.rotation === 'object') {
-      player.rotation = {
-        x: Number(movementData.rotation.x) || 0,
-        y: Number(movementData.rotation.y) || 0,
-        z: Number(movementData.rotation.z) || 0
-      };
-    }
-
-    if (typeof movementData.state === 'string') {
-      const validStates = ['idle', 'running', 'sprinting'];
-      player.state = validStates.includes(movementData.state) ? movementData.state : 'idle';
-    }
-
+    player.position = { x: position.x, y: position.y, z: position.z };
+    player.rotation = { x: 0, y: Number(rotation.y) || 0, z: 0 };
+    player.state = PLAYER_STATES.has(state) ? state : 'running';
     socket.broadcast.emit('playerMoved', player);
   });
 
-  // Combat: Handle Shooting
-  socket.on('playerShoot', (hitData = {}) => {
+  // Combat: Handle Shooting with Server-Authoritative Validation
+  socket.on('playerShoot', (hitData) => {
     const shooter = players[socket.id];
-    if (!shooter || shooter.isDead) return;
+    if (!shooter || shooter.isDead || !hitData) return;
 
-    // Enforce fire rate cooldown to reject spam/rapid-fire packet injection
+    const weapon = WEAPONS[shooter.loadout] || WEAPONS[DEFAULT_LOADOUT];
     const now = Date.now();
-    const minCooldown = (shooter.loadout && MIN_WEAPON_FIRE_COOLDOWNS[shooter.loadout])
-      ? MIN_WEAPON_FIRE_COOLDOWNS[shooter.loadout]
-      : DEFAULT_MIN_FIRE_COOLDOWN_MS;
-
-    if (shooter.lastShotTime && (now - shooter.lastShotTime) < minCooldown) {
-      return;
-    }
-    shooter.lastShotTime = now;
+    if (now - lastShotAt < weapon.fireRate * FIRE_RATE_TOLERANCE) return;
+    if (!isVec3(hitData.origin) || !isVec3(hitData.end)) return;
+    if (distance(hitData.origin, shooter.position) > MAX_ORIGIN_OFFSET) return;
+    lastShotAt = now;
 
     // Broadcast muzzle flash/sound effect to others
     socket.broadcast.emit('playerFired', {
@@ -179,68 +171,55 @@ io.on('connection', (socket) => {
       end: hitData.end
     });
 
-      // If a player was hit
-      if (hitData.targetId && players[hitData.targetId] && !players[hitData.targetId].isDead) {
-        const target = players[hitData.targetId];
+    // If a player was hit
+    const target = typeof hitData.targetId === 'string' ? players[hitData.targetId] : null;
+    if (target && target.id !== socket.id && !target.isDead &&
+        (!target.isBot || target.ownerId === socket.id) &&
+        distance(shooter.position, target.position) <= weapon.range * RANGE_TOLERANCE) {
+      const headshot = hitData.headshot === true;
+      const damage = headshot ? Math.round(weapon.damage * HEADSHOT_MULTIPLIER) : weapon.damage;
+      target.health -= damage;
 
-        // Reject self-damage packets
-        if (target.id === socket.id) return;
+      if (target.health <= 0) {
+        target.health = 0;
+        target.isDead = true;
+        target.deaths += 1;
+        players[socket.id].kills += 1;
 
-        // Validate distance between shooter and target to prevent out-of-bounds damage
-        if (!shooter.position || !target.position) return;
-        const dx = shooter.position.x - target.position.x;
-        const dy = shooter.position.y - target.position.y;
-        const dz = shooter.position.z - target.position.z;
-        const distToTarget = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        // Notify everyone of the kill
+        io.emit('playerKilled', {
+          killerId: socket.id,
+          victimId: target.id,
+          damage,
+          headshot,
+          killerStats: players[socket.id],
+          victimStats: target
+        });
+        emitLobbyStats();
 
-        if (distToTarget > MAX_COMBAT_RANGE) {
-          return;
-        }
-
-        const baseDamage = Math.max(1, Math.min(Number(hitData.damage) || 25, 120));
-        const damage = hitData.headshot ? Math.round(baseDamage * 1.8) : baseDamage;
-        target.health -= damage;
-
-        if (target.health <= 0) {
-          target.health = 0;
-          target.isDead = true;
-          target.deaths += 1;
-          players[socket.id].kills += 1;
-
-          // Notify everyone of the kill
-          io.emit('playerKilled', {
-            killerId: socket.id,
-            victimId: target.id,
-            damage,
-            headshot: !!hitData.headshot,
-            killerStats: players[socket.id],
-            victimStats: target
-          });
-          emitLobbyStats();
-
-          // Respawn the dead player after 3 seconds
-          setTimeout(() => {
-            if (players[target.id]) {
-              players[target.id].health = MAX_HP;
-              players[target.id].isDead = false;
-              players[target.id].position = pickSpawn();
-              players[target.id].lastShotTime = 0;
-              io.emit('playerRespawned', players[target.id]);
-              emitLobbyStats();
-            }
-          }, 3000);
-        } else {
-          // Notify the target they took damage
-          io.emit('playerDamaged', {
-            id: target.id,
-            attackerId: socket.id,
-            health: target.health,
-            damage,
-            headshot: !!hitData.headshot
-          });
-          emitLobbyStats();
-        }
+        // Respawn the dead player after 3 seconds
+        setTimeout(() => {
+          if (players[target.id]) {
+            players[target.id].health = MAX_HP;
+            players[target.id].isDead = false;
+            players[target.id].position = pickSpawn();
+            delete lastMoveAt[target.id];
+            io.emit('playerRespawned', players[target.id]);
+            emitLobbyStats();
+          }
+        }, 3000);
+      } else {
+        // Notify the target they took damage
+        io.emit('playerDamaged', {
+          id: target.id,
+          attackerId: socket.id,
+          health: target.health,
+          damage,
+          headshot
+        });
+        emitLobbyStats();
       }
+    }
   });
 
   // AI Bot for Training (Local to player)
@@ -267,6 +246,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
     delete players[socket.id];
+    delete lastMoveAt[socket.id];
     if (players['bot_' + socket.id]) {
       delete players['bot_' + socket.id];
     }
@@ -275,7 +255,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Bot AI Loop
 // Bot AI Loop
 setInterval(() => {
   const bots = Object.values(players).filter(p => p.isBot && !p.isDead);
@@ -328,6 +307,7 @@ setInterval(() => {
               players[target.id].health = MAX_HP;
               players[target.id].isDead = false;
               players[target.id].position = pickSpawn();
+              delete lastMoveAt[target.id];
               io.to(bot.ownerId).emit('playerRespawned', players[target.id]);
             }
           }, 3000);
