@@ -19,7 +19,7 @@
     "express": "^5.2.1",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
-    "three": "^0.184.0",
+    "three": "^0.185.1",
     "three-mesh-bvh": "^0.9.9"
   },
   "overrides": {
