@@ -13,7 +13,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "vite": "^8.0.10"
+    "vite": "^8.2.0"
   },
   "dependencies": {
     "express": "^5.2.1",
