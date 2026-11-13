@@ -331,3 +331,14 @@ io.on('connection', (socket) => {
     socket.emit('server_pong', clientTimestamp);
   });
 });
+
+
+const MAX_SLIDE_SPEED = 45; // Maximum allowed velocity during slide-jump chaining
+function clampMovementVelocity(vel) {
+  const horizontalSpeed = Math.hypot(vel.x, vel.z);
+  if (horizontalSpeed > MAX_SLIDE_SPEED) {
+    const scale = MAX_SLIDE_SPEED / horizontalSpeed;
+    return { x: vel.x * scale, y: vel.y, z: vel.z * scale };
+  }
+  return vel;
+}
