@@ -1392,3 +1392,14 @@ window.addEventListener('resize', () => {
 });
 
 animate();
+
+
+// Decal pool limit to avoid memory leaks during prolonged firefights
+const MAX_BULLET_DECALS = 80;
+const bulletDecalPool = [];
+function pruneOldDecals(scene) {
+  while (bulletDecalPool.length > MAX_BULLET_DECALS) {
+    const oldest = bulletDecalPool.shift();
+    if (oldest && oldest.parent) oldest.parent.remove(oldest);
+  }
+}
