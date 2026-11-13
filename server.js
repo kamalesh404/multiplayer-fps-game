@@ -323,3 +323,11 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`BulletStorm Arena Server running on port ${PORT}`);
 });
+
+
+// Client round-trip latency ping-pong echo
+io.on('connection', (socket) => {
+  socket.on('client_ping', (clientTimestamp) => {
+    socket.emit('server_pong', clientTimestamp);
+  });
+});
