@@ -342,3 +342,7 @@ function clampMovementVelocity(vel) {
   }
   return vel;
 }
+
+
+// Sniper rifle specification: high alpha damage, bolt cycle cooldown
+WEAPONS.sniper = { damage: 85, fireRate: 1100, range: 250 };
