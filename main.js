@@ -1403,3 +1403,28 @@ function pruneOldDecals(scene) {
     if (oldest && oldest.parent) oldest.parent.remove(oldest);
   }
 }
+
+
+// Web Audio API procedural sound synthesizer for dynamic weapon acoustics
+class ProceduralSoundEngine {
+  constructor() {
+    this.ctx = null;
+  }
+  init() {
+    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  playGunshot(frequency = 120, decay = 0.15) {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.frequency.setValueAtTime(frequency, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(30, this.ctx.currentTime + decay);
+    gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.01, this.ctx.currentTime + decay);
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.start();
+    osc.stop(this.ctx.currentTime + decay);
+  }
+}
+export const soundEngine = new ProceduralSoundEngine();
