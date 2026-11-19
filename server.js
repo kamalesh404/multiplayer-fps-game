@@ -346,3 +346,10 @@ function clampMovementVelocity(vel) {
 
 // Sniper rifle specification: high alpha damage, bolt cycle cooldown
 WEAPONS.sniper = { damage: 85, fireRate: 1100, range: 250 };
+
+
+// Verify headshot lethality for precision weapons
+function calculateLethalDamage(weaponKey, isHeadshot) {
+  const base = (WEAPONS[weaponKey] || WEAPONS.assault).damage;
+  return isHeadshot ? Math.round(base * HEADSHOT_MULTIPLIER) : base;
+}
